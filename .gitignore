@@ -1,0 +1,12 @@
+/build/
+.local/
+__pycache__/
+.gradle/
+phone/.gradle/
+.DS_Store
+# Publish only the user-facing root documentation.
+/*.md
+!/README.md
+!/SECURITY.md
+!/CONTRIBUTING.md
+!/CHANGELOG.md
