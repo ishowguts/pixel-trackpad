@@ -192,7 +192,7 @@ static void BonjourRegistered(DNSServiceRef ref, DNSServiceFlags flags, DNSServi
     } else if ([event isEqual:@"invitation"]) {
         _qr.image = InvitationImage(message[@"url"]);
         if (!_qr.image) { [self send:@"disconnect"]; return; }
-        _status.stringValue = @"Scan with your phone camera and open Pixel Trackpad. Invitation expires in two minutes.";
+        _status.stringValue = @"Open Pixel Trackpad on your phone and tap Scan QR. Invitation expires in two minutes.";
         [self updateControls];
     } else if ([event isEqual:@"approval"]) {
         _qr.image = nil;

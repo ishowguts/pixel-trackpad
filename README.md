@@ -16,18 +16,20 @@ Pinch, rotation, and smart-zoom event paths are included; application compatibil
 
 - **Mac development build** — macOS 13.3 or later, Xcode Command Line Tools, and Python 3.9 or later. Run `./build.sh`, then open `build/Pixel Trackpad.app`. Set `PYTHON3` to choose the interpreter. The app bundles the receiver scripts and uses the interpreter selected at build time.
 - **Mac portable build** — With the 20260510 Apple Silicon runtime at `build/runtime/cpython-3.13.13-macos-aarch64-none`, run `./build.sh --portable`. The output is `build/release/Pixel Trackpad.app`. An existing uv can fetch that runtime with `UV_CACHE_DIR="$PWD/build/runtime-cache" UV_PYTHON_INSTALL_DIR="$PWD/build/runtime" uv python install 3.13.13 --no-bin`. The build checks the runtime release before packaging.
-- **Android** — Android 8.0 or later. Install JDK 17 or later and Android SDK Build Tools 37.0.0 and platform `android-37.0`. Run `./phone/build.sh` to produce `build/phone/pixel-trackpad.apk`. The script uses `JAVA_HOME` and `ANDROID_HOME` when set, or macOS `java_home` and `~/Library/Android/sdk` by default.
+- **Android** — Android 8.0 or later. Install JDK 17 or later and Android SDK Build Tools 37.0.0 and platform `android-37.0`. Run `./phone/build.sh` to produce `build/phone/pixel-trackpad.apk`. The script uses `JAVA_HOME` and `ANDROID_HOME` when set, or macOS `java_home` and `~/Library/Android/sdk` by default. The first build downloads the single ZXing core 3.5.4 jar from Maven Central into `build/phone-cache`; every build verifies its pinned SHA-256. Subsequent builds work offline with that cache. No Gradle or CameraX installation is required. The APK includes ZXing's license and notices.
 
 The development APK uses a local signing key.
 
 ## Pair and connect
 
 1. Put both devices on the same LAN. Open Pixel Trackpad on the Mac and select **Pair Phone**. If the Mac lists several addresses, choose the interface on the phone’s network.
-2. Scan the QR with a phone camera or QR reader that can open custom links. Open the result in Pixel Trackpad and select **Continue**.
+2. Open Pixel Trackpad on the phone and tap **Scan QR**. Allow camera access when prompted, point the rear camera at the Mac's QR, then select **Continue** in the pairing confirmation.
 3. Compare the six-digit codes on the phone and Mac. If they match, select **Approve** on the Mac. The QR expires after two minutes and accepts one request.
 4. Select **Connect to Mac** on the phone. The phone remembers one Mac and tries the saved endpoint first. The receiver reuses its previous listener port when available. If the endpoint stops working, the phone tries fresh Bonjour discovery. If discovery is unavailable and the address or port changed, use **Forget Phone** on the Mac and pair again. **Disconnect / Cancel** on the Mac closes a session or cancels pairing. **Forget Phone** revokes reconnect access.
 
-The Mac may ask for local network access. The QR contains a private IPv4 or IPv6 ULA address and can pair without Bonjour. Guest Wi-Fi or client isolation can block direct connections as well as discovery. If your camera only displays the QR contents, use a local reader that can open the link in the app. Keep the invitation private.
+The Mac may ask for local network access. The QR contains a private IPv4 or IPv6 ULA address and can pair without Bonjour. Guest Wi-Fi or client isolation can block direct connections as well as discovery. Keep the invitation private.
+
+**Scan QR** reads QR codes offline inside Pixel Trackpad, bypassing external Camera/Lens apps and their link defaults. It does not change Google's or Android's defaults. Camera permission is requested only when you tap **Scan QR**. Frames are processed in memory, never saved, logged, or transmitted. Invalid QR codes report an error locally and scanning continues. Cancel, leaving the app, camera interruption, or a valid scan closes the camera. Scanning disconnects any active trackpad session. Rear-camera and autofocus capabilities are optional; manually opening a pairing link in Pixel Trackpad remains supported without camera permission. Camera preview, focus, and permission behavior still need testing on physical phones.
 
 The phone's **Settings** retain calibration and gesture preferences when you pair. To calibrate, measure the gray active surface in landscape and enter its width and height in millimeters. A previously configured private endpoint can still connect to the legacy receiver until you pair through the new window.
 
@@ -39,6 +41,10 @@ Run `python3 check_phone.py` and `python3 check_onboarding.py` after building th
 
 For a portable copy, pass its path to `python3 check_onboarding.py --bundle "/path/to/Pixel Trackpad.app"`.
 
+After the Android build, run `./phone/check.sh` for an offline JVM check of generated invitation QR decoding, rotated and padded camera planes, and rejection through the shared invitation parser. Run the existing `adb shell am instrument -w local.pixeltrackpad/.MotionCheck` on a connected phone to check motion queuing.
+
+On a phone, check camera permission grant, denial, and retry; Scan QR cancellation and Home/lock while opening or scanning; repeated scans; another app taking the camera; upright preview with correct proportions and focus; and invalid QR codes remaining in the scanner. Verify the camera privacy indicator clears after exit. A valid Mac QR must still show confirmation, compare the six-digit codes, and require Mac approval before saving pairing. Confirm manual links, remembered reconnect, settings, and touch input still work. JVM checks do not validate camera hardware or visible behavior.
+
 ## License
 
-[MIT](LICENSE). Retain the third-party attribution in [NOTICE](NOTICE) and the bundled runtime license notices.
+[MIT](LICENSE). Retain the third-party attribution in [NOTICE](NOTICE), the [ZXing license](phone/licenses/ZXing-LICENSE.txt) and [notices](phone/licenses/ZXing-NOTICE.txt), and the bundled runtime license notices. ZXing core 3.5.4 is Apache-2.0 licensed.

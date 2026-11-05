@@ -3,6 +3,8 @@ package local.pixeltrackpad;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.Manifest;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.os.Build;
@@ -27,7 +29,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Locale;
-import java.util.regex.Pattern;
 import java.security.cert.*;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -37,14 +38,14 @@ public final class MainActivity extends Activity {
     private TextView status;
     private Button connect;
     private AlertDialog invitationDialog;
+    private QrScanner scanner;
+    private boolean resumed, scanPermissionPending, scanWhenResumed;
+    private static final int CAMERA_PERMISSION = 7;
     private Surface surface;
     private volatile Link link;
     private int maximum;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final String SERVICE_TYPE = "_pixeltrackpad._tcp.";
-    private static final Pattern INVITATION = Pattern.compile(
-            "local[.]pixeltrackpad://pair/(?:v2/([0-9a-f:.]{1,39})/([0-9]{4,5})/|v1/)"
-            + "([0-9a-f]{64})/([0-9a-f]{64})");
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     private AtomicFile storage() {
@@ -61,10 +62,12 @@ public final class MainActivity extends Activity {
         connect.setOnClickListener(v -> { if (link == null) start(); else stop(); });
         Button settings = new Button(this); settings.setText("Settings");
         settings.setOnClickListener(v -> edit());
+        Button scan = new Button(this); scan.setText("Scan QR");
+        scan.setOnClickListener(v -> scan());
         status = new TextView(this);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         status.setText("Disconnected. Maximum contacts: 0");
-        controls.addView(connect); controls.addView(settings);
+        controls.addView(connect); controls.addView(settings); controls.addView(scan);
         controls.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
         layout.addView(controls);
         surface = new Surface();
@@ -83,22 +86,24 @@ public final class MainActivity extends Activity {
         if (!Intent.ACTION_VIEW.equals(intent.getAction())) return;
         String uri = intent.getDataString();
         setIntent(new Intent(this, MainActivity.class));
+        acceptInvitation(uri);
+    }
+
+    private boolean acceptInvitation(String uri) {
         final JSONObject pairing;
         final String invitation;
         try {
-            if (uri == null || uri.length() > 210) throw new IOException("Invalid invitation");
-            var match = INVITATION.matcher(uri);
-            if (!match.matches()) throw new IOException("Invalid invitation");
-            pairing = new JSONObject().put("fingerprint", match.group(3)).put("bonjour", true);
-            invitation = match.group(4);
-            if (match.group(1) != null) {
-                pairing.put("host", match.group(1)).put("port", Integer.parseInt(match.group(2)));
-                savedEndpoint(pairing, false);
+            Invitation parsed = Invitation.parse(uri);
+            pairing = new JSONObject().put("fingerprint", parsed.fingerprint).put("bonjour", true);
+            invitation = parsed.token;
+            if (parsed.host != null) {
+                pairing.put("host", parsed.host).put("port", Integer.parseInt(parsed.port));
             }
         } catch (Exception error) {
             status.setText("Invalid pairing link.");
-            return;
+            return false;
         }
+        closeScanner();
         String pin = pairing.optString("fingerprint");
         stop();
         if (invitationDialog != null) invitationDialog.dismiss();
@@ -112,6 +117,37 @@ public final class MainActivity extends Activity {
                         status.setText("Could not start pairing.");
                     }
                 }).show();
+        return true;
+    }
+
+    private void scan() {
+        if (scanner != null || scanPermissionPending) return;
+        stop();
+        if (invitationDialog != null) invitationDialog.dismiss();
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            scanPermissionPending = true;
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
+        } else openScanner();
+    }
+
+    private void openScanner() {
+        if (resumed && scanner == null) scanner = new QrScanner(this, this::acceptInvitation, () -> scanner = null);
+    }
+
+    private void closeScanner() {
+        if (scanner != null) scanner.close();
+    }
+
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] grants) {
+        super.onRequestPermissionsResult(request, permissions, grants);
+        if (request != CAMERA_PERMISSION) return;
+        if (!scanPermissionPending) return;
+        scanPermissionPending = false;
+        if (grants.length > 0 && grants[0] == PackageManager.PERMISSION_GRANTED) {
+            scanWhenResumed = !resumed;
+            if (resumed) openScanner();
+        }
+        else status.setText("Camera permission denied. Tap Scan QR to retry, or open a pairing link manually.");
     }
 
     private JSONObject read() throws Exception {
@@ -215,20 +251,7 @@ public final class MainActivity extends Activity {
     }
 
     private static InetSocketAddress savedEndpoint(JSONObject pairing, boolean legacy) throws Exception {
-        String host = pairing.getString("host");
-        boolean ipv4 = host.matches("[0-9]{1,3}(\\.[0-9]{1,3}){3}");
-        if (!ipv4 && !(host.contains(":") && host.matches("[0-9a-fA-F:]+"))) throw new IOException("Use IP literal");
-        if (ipv4) for (String part : host.split("\\.")) if (Integer.parseInt(part) > 255) throw new IOException("Invalid IP literal");
-        InetAddress address = InetAddress.getByName(host);
-        byte[] bytes = address.getAddress();
-        if (!address.isSiteLocalAddress() && !(bytes.length == 16 && (bytes[0] & 0xfe) == 0xfc)
-                && !(legacy && address.isLoopbackAddress())) throw new IOException("Use private LAN IP");
-        if (!legacy && bytes.length == 16 && (bytes[0] & 0xfe) != 0xfc) throw new IOException("Use IPv6 ULA");
-        String portText = pairing.getString("port");
-        if (!portText.matches("[0-9]{4,5}")) throw new IOException("Invalid port");
-        int port = Integer.parseInt(portText);
-        if (port < 1024 || port > 65535) throw new IOException("Invalid port");
-        return new InetSocketAddress(address, port);
+        return Invitation.endpoint(pairing.getString("host"), pairing.getString("port"), legacy);
     }
 
     private static void rememberEndpoint(JSONObject pairing, InetSocketAddress address) throws Exception {
@@ -289,7 +312,13 @@ public final class MainActivity extends Activity {
         if (surface != null) { surface.capturing = false; surface.invalidate(); }
     }
 
-    @Override protected void onPause() { stop(); super.onPause(); }
+    @Override protected void onResume() {
+        super.onResume(); resumed = true;
+        if (scanWhenResumed) { scanWhenResumed = false; openScanner(); }
+    }
+    @Override protected void onPause() { resumed = false; closeScanner(); stop(); super.onPause(); }
+    @Override protected void onStop() { scanPermissionPending = false; scanWhenResumed = false; super.onStop(); }
+    @Override protected void onDestroy() { closeScanner(); super.onDestroy(); }
     @Override public void onWindowFocusChanged(boolean focused) { super.onWindowFocusChanged(focused); if (!focused && link != null) stop(); }
 
     static JSONObject nextFrame(ArrayBlockingQueue<JSONObject> queue) throws InterruptedException {
