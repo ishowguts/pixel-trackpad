@@ -2,6 +2,7 @@ package local.pixeltrackpad;
 
 import android.app.Activity;
 import android.app.Instrumentation;
+import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import org.json.JSONObject;
 import java.io.InputStream;
@@ -122,6 +123,15 @@ public final class MotionCheck extends Instrumentation {
     @Override public void onStart() {
         Bundle result = new Bundle();
         try {
+            WifiManager.WifiLock lock = MainActivity.acquireWifiLock(getTargetContext());
+            try {
+                require(lock != null && lock.isHeld(), "Wi-Fi lock acquisition failed");
+                MainActivity.releaseWifiLock(lock);
+                require(!lock.isHeld(), "Wi-Fi lock remained held after release");
+                MainActivity.releaseWifiLock(lock);
+                MainActivity.releaseWifiLock(null);
+                require(!lock.isHeld(), "Repeated Wi-Fi cleanup changed lock state");
+            } finally { MainActivity.releaseWifiLock(lock); }
             ArrayBlockingQueue<JSONObject> queue = new ArrayBlockingQueue<>(64);
             queue.add(frame("down", false));
             for (int i = 1; i <= 20; i++) queue.add(frame("move" + i, true));
@@ -141,10 +151,10 @@ public final class MotionCheck extends Instrumentation {
             }
             if (MainActivity.nextFrame(queue) != null) throw new AssertionError("Idle heartbeat path");
             transportCheck(true);
-            result.putString("stream", "PASS: latest movement retained; every finger transition ordered; metadata removed; idle path preserved; bounded ACK pipeline resumes and terminates. No network or input events.");
+            result.putString("stream", "PASS: Wi-Fi lock acquired, released, and cleaned up repeatedly; latest movement retained; every finger transition ordered; metadata removed; idle path preserved; bounded ACK pipeline resumes and terminates. No network or input events.");
             finish(Activity.RESULT_OK, result);
         } catch (Exception | AssertionError failure) {
-            result.putString("stream", "FAIL: motion queue check");
+            result.putString("stream", "FAIL: Wi-Fi lock or motion queue check");
             finish(Activity.RESULT_CANCELED, result);
         }
     }

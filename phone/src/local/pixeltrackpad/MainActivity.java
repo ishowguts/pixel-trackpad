@@ -3,10 +3,12 @@ package local.pixeltrackpad;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.Context;
 import android.content.pm.PackageManager;
 import android.Manifest;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -288,7 +290,9 @@ public final class MainActivity extends Activity {
 
     private void begin(Link next) throws Exception {
         stop();
+        if (!resumed) return;
         link = next;
+        next.wifiLock = acquireWifiLock(getApplicationContext());
         status.setText("Finding Mac…");
         connect.setText("Disconnect");
         try {
@@ -318,8 +322,35 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onPause() { resumed = false; closeScanner(); stop(); super.onPause(); }
     @Override protected void onStop() { scanPermissionPending = false; scanWhenResumed = false; super.onStop(); }
-    @Override protected void onDestroy() { closeScanner(); super.onDestroy(); }
+    @Override protected void onDestroy() { closeScanner(); stop(); super.onDestroy(); }
     @Override public void onWindowFocusChanged(boolean focused) { super.onWindowFocusChanged(focused); if (!focused && link != null) stop(); }
+
+    // HIGH_PERF is used only on Android 8–9, before LOW_LATENCY was available.
+    @SuppressWarnings("deprecation")
+    static WifiManager.WifiLock acquireWifiLock(Context context) {
+        WifiManager.WifiLock lock = null;
+        try {
+            WifiManager manager = context.getApplicationContext().getSystemService(WifiManager.class);
+            if (manager == null) return null;
+            lock = manager.createWifiLock(Build.VERSION.SDK_INT >= 29
+                    ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY : WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                    "PixelTrackpad:connection");
+            lock.setReferenceCounted(false);
+            lock.acquire();
+            if (lock.isHeld()) return lock;
+        } catch (RuntimeException ignored) {
+            // This optional optimization must not prevent pairing or input.
+        }
+        releaseWifiLock(lock);
+        return null;
+    }
+
+    static void releaseWifiLock(WifiManager.WifiLock lock) {
+        try { if (lock != null && lock.isHeld()) lock.release(); }
+        catch (RuntimeException ignored) {
+            // A Wi-Fi service failure must not interrupt connection cleanup.
+        }
+    }
 
     static JSONObject nextFrame(ArrayBlockingQueue<JSONObject> queue) throws InterruptedException {
         JSONObject frame = queue.poll(250, TimeUnit.MILLISECONDS);
@@ -383,6 +414,7 @@ public final class MainActivity extends Activity {
         volatile boolean closed, ready;
         volatile Socket socket;
         volatile AckWindow acknowledgements;
+        WifiManager.WifiLock wifiLock;
         Link(JSONObject pairing, String invitation) {
             this.pairing = pairing;
             this.invitation = invitation;
@@ -471,6 +503,7 @@ public final class MainActivity extends Activity {
         void close() {
             closed = true;
             ready = false;
+            releaseWifiLock(wifiLock);
             queue.clear();
             if (acknowledgements != null) acknowledgements.close();
             try { if (socket != null) socket.close(); } catch (IOException ignored) {}

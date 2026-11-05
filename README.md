@@ -33,6 +33,8 @@ The Mac may ask for local network access. When a private IPv4 or IPv6 ULA endpoi
 
 The phone's **Settings** retain calibration and gesture preferences when you pair. To calibrate, measure the gray active surface in landscape and enter its width and height in millimeters. A previously configured private endpoint can still connect to the legacy receiver until you pair through the new window.
 
+Connection attempts and sessions request low-latency Wi-Fi on Android 10+ (high-performance Wi-Fi on Android 8–9), trading extra energy use for potentially lower latency until disconnect or leaving the app.
+
 To use live input, grant macOS Accessibility permission to Pixel Trackpad and explicitly select **Enable live input for this launch** on the Mac. Each launch starts in dry run. Continuous gesture support depends on macOS and the target app. Vertical system gestures remain experimental. Notarization, Android release signing and configuration, and wider phone, Mac, and network testing remain release gates. The receiver supports one remembered phone at a time.
 
 ## Checks
@@ -41,7 +43,7 @@ Run `python3 check_phone.py` and `python3 check_onboarding.py` after building th
 
 For a portable copy, pass its path to `python3 check_onboarding.py --bundle "/path/to/Pixel Trackpad.app"`.
 
-After the Android build, run `./phone/check.sh` for an offline JVM check of generated invitation QR decoding, rotated and padded camera planes, and rejection through the shared invitation parser. Run the existing `adb shell am instrument -w local.pixeltrackpad/.MotionCheck` on a connected phone to check motion queuing.
+After the Android build, run `./phone/check.sh` for an offline JVM check of generated invitation QR decoding, rotated and padded camera planes, and rejection through the shared invitation parser. Run the existing `adb shell am instrument -w local.pixeltrackpad/.MotionCheck` on a connected phone to check motion queuing and actual Wi-Fi lock acquisition, release, and repeated cleanup without opening a network connection or posting input; a held lock does not prove OS low-latency activation or smoother scrolling.
 
 On a phone, check camera permission grant, denial, and retry; Scan QR cancellation and Home/lock while opening or scanning; repeated scans; another app taking the camera; upright preview with correct proportions and focus; and invalid QR codes remaining in the scanner. Verify the camera privacy indicator clears after exit. A valid Mac QR must still show confirmation, compare the six-digit codes, and require Mac approval before saving pairing. Confirm manual links, remembered reconnect, settings, and touch input still work. JVM checks do not validate camera hardware or visible behavior.
 
