@@ -219,16 +219,20 @@ class Recognizer:
         elif len(ids) == 2:
             angle_total = math.atan2(math.sin(angle-self.origin[3]), math.cos(angle-self.origin[3]))
             if self.mode is None:
-                # exclusive dominant gesture; add simultaneous pinch/rotation only after device testing.
-                if abs(distance-self.origin[2]) > 2:
-                    self.mode = 'pinch'
-                elif abs(angle_total) > .12:
-                    self.mode = 'rotate'
-                elif math.hypot(total_x, total_y) > 2:
+                # Compare per-finger travel in mm: translation, radial change, and rotation arc.
+                translation = math.hypot(total_x, total_y)
+                separation = abs(distance-self.origin[2]) / 2
+                rotation = abs(angle_total) * (distance+self.origin[2]) / 4
+                if translation > max(separation, rotation) and translation > .5:
                     self.mode = 'scroll'
+                elif separation >= max(translation, rotation) and separation > 1:
+                    self.mode = 'pinch'
+                elif rotation > max(translation, separation) and abs(angle_total) > .12:
+                    self.mode = 'rotate'
                 if self.mode:
                     self.gesture({'scroll': 0, 'pinch': 1, 'rotate': 2}[self.mode], 1)
                     self.tap_ok = False
+                    self.pending_secondary = None
             if self.mode == 'scroll':
                 gain = self.config['scroll'] * (1 if self.config['natural'] else -1)
                 sx, sy = dx*gain, dy*gain

@@ -168,6 +168,87 @@ class PrototypeCheck(unittest.TestCase):
         r.cancel()
         self.assertEqual(sum(e.get('op') == 'anchor' for e in events), 2)
 
+    def test_two_finger_selection(self):
+        origin = {0: (0, 0), 1: (20, 0)}
+        paths = [
+            # Unequal translation previously latched pinch on the first sample.
+            [(.02, {0: (0, 3), 1: (22.2, 4)})],
+            # Asynchronous updates followed by translation with modest angle drift.
+            [(.01, {0: (0, .4), 1: (20, 0)}),
+             (.02, {0: (0, 3), 1: (20, 6)}),
+             (.04, {0: (.2, 5), 1: (20.4, 8.2)})],
+            # Entire slow swipe stays below the old 2 mm activation threshold.
+            [(step*.08, {0: (.02*step, .12*step), 1: (20, .14*step)})
+             for step in range(1, 11)],
+        ]
+        for path in paths:
+            with self.subTest(path=path):
+                events = []
+                r = Recognizer({}, events.append, clock=lambda: 10.)
+                r.sample(origin, 0)
+                for t, points in path:
+                    r.sample(points, t)
+                self.assertEqual(r.mode, 'scroll')
+                scroll = [e for e in events if e.get('test') == 0]
+                self.assertEqual(scroll[0]['phase'], 1)
+                self.assertTrue(any(e['phase'] == 2 and e['value'] > 0 for e in scroll))
+                self.assertFalse(any(e.get('test') in (1, 2) for e in events))
+                # Selection remains exclusive even when later separation dominates.
+                r.sample({0: (-10, points[0][1]+1), 1: (30, points[1][1]+1)}, t+.01)
+                self.assertEqual(r.mode, 'scroll')
+                r.sample({0: (-10, points[0][1]+1)}, t+.02)
+                self.assertEqual((events[-1]['test'], events[-1]['phase']), (0, 4))
+                self.assertIsNone(r.momentum)
+                before = len(events)
+                r.sample({0: (-5, points[0][1]+1)}, t+.025)
+                self.assertEqual(len(events), before)
+                r.sample({}, t+.03)
+                self.assertIsNotNone(r.momentum)
+                r.tick(10.02)
+                self.assertTrue(any(e.get('momentum') == 1 and e.get('phase') == 2 for e in events))
+                r.cancel()
+                self.assertEqual((events[-1]['phase'], events[-1]['momentum']), (4, 1))
+                self.assertFalse(any(e['op'] in ('move', 'button') for e in events))
+
+        events = []
+        r = Recognizer({}, events.append, clock=lambda: 10.)
+        for t in (1, 1.2):
+            r.sample(origin, t)
+            r.sample({0: (.1, .2), 1: (19.9, .1)}, t+.02)
+            r.sample({}, t+.05)
+        self.assertEqual([e.get('test') for e in events if e['op'] == 'gesture'], [3])
+        r.sample(origin, 2)
+        r.sample({0: (-.1, .1), 1: (20.1, -.1)}, 2.02)
+        r.sample({}, 2.05)
+        r.tick(10.33)
+        self.assertEqual(events[-1].get('right'), 1)
+        # A short scroll following a tap must cancel its deferred secondary click.
+        r.sample(origin, 3)
+        r.sample({}, 3.05)
+        r.sample(origin, 3.2)
+        r.sample({0: (0, 1), 1: (20, 1.1)}, 3.22)
+        self.assertEqual(r.mode, 'scroll')
+        before = len(events)
+        r.tick(10.34)
+        self.assertEqual(len(events), before)
+        r.cancel()
+        self.assertEqual((events[-1]['test'], events[-1]['phase']), (0, 8))
+
+        for mode, test, points in (
+            ('pinch', 1, {0: (-2, 0), 1: (22, 0)}),
+            ('rotate', 2, {0: (10-10*math.cos(.2), -10*math.sin(.2)),
+                           1: (10+10*math.cos(.2), 10*math.sin(.2))}),
+        ):
+            with self.subTest(mode=mode):
+                events = []
+                r = Recognizer({}, events.append)
+                r.sample(origin, 0)
+                r.sample(points, .02)
+                self.assertEqual(r.mode, mode)
+                r.sample({}, .04)
+                self.assertEqual([(e['test'], e['phase']) for e in events if e['op'] == 'gesture'],
+                                 [(test, 1), (test, 2), (test, 4)])
+
     def test_taps_and_transitions(self):
         events = []
         r = Recognizer({}, events.append, clock=lambda: 10.)
