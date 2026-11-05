@@ -382,6 +382,7 @@ public final class MainActivity extends Activity {
         final ArrayBlockingQueue<JSONObject> queue = new ArrayBlockingQueue<>(64);
         volatile boolean closed, ready;
         volatile Socket socket;
+        volatile AckWindow acknowledgements;
         Link(JSONObject pairing, String invitation) {
             this.pairing = pairing;
             this.invitation = invitation;
@@ -471,6 +472,7 @@ public final class MainActivity extends Activity {
             closed = true;
             ready = false;
             queue.clear();
+            if (acknowledgements != null) acknowledgements.close();
             try { if (socket != null) socket.close(); } catch (IOException ignored) {}
         }
 
@@ -562,19 +564,23 @@ public final class MainActivity extends Activity {
                     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     status.setText("Connected. Maximum contacts: " + maximum);
                 });
+                acknowledgements = new AckWindow(secure);
+                if (closed) acknowledgements.close();
                 long sequence = 0;
                 while (!closed) {
+                    acknowledgements.awaitCapacity();
                     JSONObject frame = nextFrame(queue);
                     if (frame == null) { frame = new JSONObject(); frame.put("type", "heartbeat"); frame.put("t", SystemClock.uptimeMillis()); }
+                    acknowledgements.beginFrame();
                     frame.put("seq", sequence++); send(output, frame);
-                    // Receiver replies after each frame, bounding writes and detecting failed sessions.
-                    if (input.read() != 'K') throw new IOException("Session closed");
                 }
             } catch (Exception error) {
                 // No pairing data or exception text enters Android logs or UI.
             } finally {
                 boolean retry = !closed && !ready && invitation == null && pairing.optBoolean("bonjour") && !usedDiscovery;
+                if (acknowledgements != null) acknowledgements.close();
                 try { if (socket != null) socket.close(); } catch (IOException ignored) {}
+                if (acknowledgements != null) acknowledgements.awaitStopped();
                 runOnUiThread(() -> {
                     if (link != this) return;
                     if (retry) {
