@@ -61,12 +61,12 @@ def check(state, bundle):
     def hello(peer, token):
         send(peer, type='hello', version=1, secret=token, t=time.monotonic()*1000)
 
-    def invite():
-        command('pair', host='127.0.0.1')
+    def invite(discovery=False):
+        command('pair', **({} if discovery else dict(host='127.0.0.1')))
         message = read(process.stdout)
         assert message['event'] == 'invitation'
-        match = re.fullmatch(rf'local\.pixeltrackpad://pair/v2/127\.0\.0\.1/{listening["port"]}/([0-9a-f]{{64}})/([0-9a-f]{{64}})',
-                             message['url'])
+        prefix = 'v1' if discovery else f'v2/127.0.0.1/{listening["port"]}'
+        match = re.fullmatch(rf'local\.pixeltrackpad://pair/{prefix}/([0-9a-f]{{64}})/([0-9a-f]{{64}})', message['url'])
         assert match
         return match.groups()
 
@@ -88,9 +88,19 @@ def check(state, bundle):
         listening = read(process.stdout)
         assert listening['event'] == 'listening' and not listening['paired']
         initial_port = listening['port']
-        command('pair', host='8.8.8.8')
-        assert not select.select([process.stdout], [], [], .25)[0]
-        pin, token = invite()
+        for host in (None, 123, '', 'not-an-address', '8.8.8.8', '192.0.0.2',
+                     '2606:4700:4700::1111', 'fe80::1', 'fe80::1%en0', 'fc00::1%en0'):
+            command('pair', host=host)
+            assert not select.select([process.stdout], [], [], .25)[0]
+        pin, cancelled_token = invite(discovery=True)
+        assert listening['service'] == 'Pixel Trackpad '+pin[:24]
+        command('disconnect')
+        assert read(process.stdout) == {'event': 'idle', 'paired': False}
+        with connect() as peer:
+            request(peer, cancelled_token)
+            assert not peer.recv(1)
+        same_pin, token = invite()
+        assert same_pin == pin and token != cancelled_token
         assert listening['service'] == 'Pixel Trackpad '+pin[:24]
         try:
             connect(wrong_pin=True)
@@ -117,7 +127,7 @@ def check(state, bundle):
         with connect() as peer:
             request(peer, token)
             assert not peer.recv(1)
-        same_pin, token = invite()
+        same_pin, token = invite(discovery=True)
         assert same_pin == pin
         with connect() as peer, peer.makefile('rb') as replies:
             request(peer, token)
@@ -175,7 +185,7 @@ def check(state, bundle):
         assert listening['port'] != initial_port
     try:
         assert not listening['paired']
-        same_pin, expired_token = invite()
+        same_pin, expired_token = invite(discovery=True)
         assert same_pin == pin
         assert read(process.stdout) == {'event': 'idle', 'paired': False}
         with connect() as peer:

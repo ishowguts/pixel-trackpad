@@ -96,7 +96,7 @@ static void BonjourRegistered(DNSServiceRef ref, DNSServiceFlags flags, DNSServi
     NSDictionary *endpoints = PrivateEndpoints();
     NSArray *labels = [[endpoints allKeys] sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
     if (labels.count == 0) {
-        _status.stringValue = @"No private LAN address. Join the phone’s network and try Pair Phone again.";
+        [self send:@"pair"];
     } else if (labels.count == 1) {
         [self send:@"pair" host:endpoints[labels.firstObject]];
     } else {
@@ -165,8 +165,8 @@ static void BonjourRegistered(DNSServiceRef ref, DNSServiceFlags flags, DNSServi
 }
 
 - (void)bonjourResult:(DNSServiceErrorType)error {
-    _discovery.stringValue = error ? @"Bonjour unavailable. Direct LAN pairing is available."
-                                   : @"Bonjour advertised. Direct LAN pairing is available.";
+    _discovery.stringValue = error ? @"Bonjour unavailable. Direct pairing needs a private LAN address."
+                                   : @"Bonjour advertised. Direct pairing needs a private LAN address.";
     if (error) [self stopBonjour];
 }
 
@@ -187,12 +187,14 @@ static void BonjourRegistered(DNSServiceRef ref, DNSServiceFlags flags, DNSServi
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
             ReceiverWindow *owner = weakSelf;
             if (owner && [owner->_discovery.stringValue isEqual:@"Bonjour registration pending."])
-                owner->_discovery.stringValue = @"Bonjour unconfirmed. Direct LAN pairing is available.";
+                owner->_discovery.stringValue = @"Bonjour unconfirmed. Direct pairing needs a private LAN address.";
         });
     } else if ([event isEqual:@"invitation"]) {
         _qr.image = InvitationImage(message[@"url"]);
         if (!_qr.image) { [self send:@"disconnect"]; return; }
-        _status.stringValue = @"Open Pixel Trackpad on your phone and tap Scan QR. Invitation expires in two minutes.";
+        _status.stringValue = [message[@"url"] hasPrefix:@"local.pixeltrackpad://pair/v1/"]
+            ? @"Tap Scan QR in Pixel Trackpad on your phone. No private LAN address; Bonjour discovery is required. Invitation expires in two minutes."
+            : @"Open Pixel Trackpad on your phone and tap Scan QR. Invitation expires in two minutes.";
         [self updateControls];
     } else if ([event isEqual:@"approval"]) {
         _qr.image = nil;

@@ -87,17 +87,19 @@ def serve(state, bundle_binary, loopback):
                 raise SystemExit(0)
             if command == 'pair' and secret is None and pending is None and invitation is None:
                 host = message.get('host')
-                if not isinstance(host, str):
-                    continue
-                try:
-                    address = ipaddress.ip_address(host)
-                except ValueError:
-                    address = None
-                if not ((loopback and address == ipaddress.ip_address('127.0.0.1')) or
-                        (address is not None and '%' not in host and any(address in subnet for subnet in QR_NETWORKS))):
-                    continue
+                if 'host' in message:
+                    if not isinstance(host, str):
+                        continue
+                    try:
+                        address = ipaddress.ip_address(host)
+                    except ValueError:
+                        continue
+                    if not ((loopback and address == ipaddress.ip_address('127.0.0.1')) or
+                            ('%' not in host and any(address in subnet for subnet in QR_NETWORKS))):
+                        continue
                 invitation, expires = secrets.token_hex(32), time.monotonic()+INVITATION_SECONDS
-                url = f'local.pixeltrackpad://pair/v2/{address}/{port}/{pin}/{invitation}'
+                url = (f'local.pixeltrackpad://pair/v2/{address}/{port}/{pin}/{invitation}' if 'host' in message
+                       else f'local.pixeltrackpad://pair/v1/{pin}/{invitation}')
                 notify('invitation', url=url)
             if command == 'approve' and pending and message.get('request') == pending:
                 approved = True
