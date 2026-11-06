@@ -18,8 +18,13 @@ final class AckWindow implements Closeable {
     private final long[] deadlines = new long[LIMIT];
     private int head, count;
     private boolean closed;
+    private final boolean stopSupported;
+    volatile boolean remoteStopped;
 
-    AckWindow(Socket socket) throws IOException {
+    AckWindow(Socket socket) throws IOException { this(socket, false); }
+
+    AckWindow(Socket socket, boolean stopSupported) throws IOException {
+        this.stopSupported = stopSupported;
         this.socket = socket;
         input = socket.getInputStream();
         reader = new Thread(this::drain, "trackpad-acks");
@@ -58,6 +63,7 @@ final class AckWindow implements Closeable {
                 synchronized (this) {
                     if (closed) return;
                     readTimeout();
+                    if (ack == 'S' && stopSupported) remoteStopped = true;
                     if (ack != 'K' || count == 0) throw new IOException("Invalid acknowledgement or EOF");
                     head = (head + 1) % LIMIT;
                     count--;

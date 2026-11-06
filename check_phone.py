@@ -21,6 +21,67 @@ from receiver import Bridge, Recognizer, Session, context, decode, serve_client
 
 
 class PrototypeCheck(unittest.TestCase):
+    def test_idle_recovery_stop_and_surface(self):
+        import receiver
+        # Only in-memory native commands and disposable sockets; never launch an input helper.
+        for capable, stop in ((False, True), (True, True), (True, False)):
+            secret = secrets.token_hex(32)
+            events, errors = [], []
+            stopping = threading.Event()
+            server, peer = socket.socketpair()
+            def poll():
+                if stopping.is_set():
+                    raise receiver.StopRequested('Stopped by check')
+            def run():
+                try:
+                    serve_client(server, secret, events.append, poll=poll)
+                except receiver.StopRequested:
+                    pass
+                except Exception as error:
+                    errors.append(type(error).__name__)
+                finally:
+                    server.close()
+            thread = threading.Thread(target=run)
+            thread.start()
+            try:
+                with peer, peer.makefile('rb') as replies:
+                    peer.settimeout(2)
+                    def send(**packet):
+                        peer.sendall((json.dumps(packet)+'\n').encode())
+                    send(type='hello', version=1, secret=secret, t=time.monotonic()*1000,
+                         settings={'drag': True, 'gain': 21.6, 'scroll': 15}, recovery=capable)
+                    welcome = json.loads(replies.readline())
+                    self.assertEqual(welcome, dict(type='ready', stop=True, surfaceScale=True) if capable else dict(type='ready'))
+                    # More than both the one-second receiver bound and three-second ACK deadline.
+                    for seq in range(14):
+                        time.sleep(.25)
+                        send(type='heartbeat', seq=seq, t=time.monotonic()*1000)
+                        self.assertEqual(replies.read(1), b'K')
+                    # Equivalent physical travel across a resized surface keeps the configured gain.
+                    for seq, x in ((14, .2), (15, .21)):
+                        send(type='sample', seq=seq, t=time.monotonic()*1000,
+                             surface=[2, 1.5], contacts=[dict(id=0, x=x, y=.2)])
+                        self.assertEqual(replies.read(1), b'K')
+                    self.assertAlmostEqual(sum(e['x'] for e in events if e['op'] == 'move'), 2.6*21.6)
+                    if stop:
+                        stopping.set()
+                        self.assertEqual(replies.read(), b'S' if capable else b'')
+                    else:
+                        # Idle without heartbeats still expires and releases held input.
+                        self.assertEqual(replies.read(), b'')
+                thread.join(2)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(errors, [] if stop else ['ValueError'])
+                self.assertEqual([e['down'] for e in events if e['op'] == 'button'], [1, 0])
+            finally:
+                peer.close()
+                stopping.set()
+                thread.join(2)
+        # Surface fields remain validated at the trust boundary.
+        session = Session(dict(type='hello', version=1, secret=secret, t=0), secret, lambda event: None, now=0)
+        with self.assertRaises(ValueError):
+            session.frame(dict(type='sample', seq=0, t=0, contacts=[], surface=[9, 1]), now=0)
+
     def test_helper_failure_reconnect(self):
         import receiver
         secret = secrets.token_hex(32)

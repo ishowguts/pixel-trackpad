@@ -295,6 +295,11 @@ class Session:
         contacts = packet.get('contacts')
         if not isinstance(contacts, list) or len(contacts) > 5:
             raise ValueError('Invalid contacts')
+        scale = packet.get('surface', [1, 1])
+        if not isinstance(scale, list) or len(scale) != 2:
+            raise ValueError('Invalid surface scale')
+        width = self.recognizer.config['width'] * number(scale[0], .25, 8)
+        height = self.recognizer.config['height'] * number(scale[1], .25, 8)
         points = {}
         for contact in contacts:
             if not isinstance(contact, dict):
@@ -302,8 +307,8 @@ class Session:
             identity = number(contact.get('id'), 0, 31)
             if type(identity) is not int or identity in points:
                 raise ValueError('Duplicate contact ID')
-            points[identity] = (number(contact.get('x'), 0, 1)*self.recognizer.config['width'],
-                                number(contact.get('y'), 0, 1)*self.recognizer.config['height'])
+            points[identity] = (number(contact.get('x'), 0, 1)*width,
+                                number(contact.get('y'), 0, 1)*height)
         self.recognizer.sample(dict(sorted(points.items())), timestamp)
 
 
@@ -425,13 +430,18 @@ def decode(line):
         raise ValueError('JSON nesting too deep') from error
 
 
-def serve_client(connection, secret, emit, poll=lambda: None, pair=None, ready=lambda: None):
+class StopRequested(ConnectionAbortedError):
+    """An explicit receiver control, distinct from a transport failure."""
+
+
+def serve_client(connection, secret, emit, poll=lambda: None, pair=None, ready=lambda: None, admit=lambda hello: None):
     """Bounded newline input; timeouts cancel held state even with partial frames."""
     if connection.family in (socket.AF_INET, socket.AF_INET6):
         connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     connection.settimeout(.016)
     buffer = b''
     session = None
+    stop_supported = welcomed = False
     received = time.monotonic()
     pinged = received
     try:
@@ -463,12 +473,24 @@ def serve_client(connection, secret, emit, poll=lambda: None, pair=None, ready=l
                         pair(connection, packet)
                         return
                     session = Session(packet, secret, emit)
-                    connection.sendall(b'{"type":"ready"}\n')
+                    stop_supported = packet.get('recovery') is True
+                    admit(packet)
+                    response = b'{"type":"ready","stop":true,"surfaceScale":true}\n' if stop_supported else b'{"type":"ready"}\n'
+                    connection.sendall(response)
+                    welcomed = True
                     ready()
                 else:
                     session.frame(packet)
                     connection.sendall(b'K')
                 received = time.monotonic()
+    except StopRequested:
+        # Only authenticated, opted-in clients receive this byte. Old clients still see EOF.
+        if session and stop_supported:
+            try:
+                connection.sendall(b'S' if welcomed else b'{"type":"stopped"}\n')
+            except OSError:
+                pass
+        raise
     finally:
         if session:
             session.recognizer.cancel()

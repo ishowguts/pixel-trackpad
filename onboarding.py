@@ -64,6 +64,7 @@ def serve(state, bundle_binary, loopback):
     expires = 0
     approved = False
     live = False
+    auto_allowed = True
 
     def read_commands():
         try:
@@ -73,7 +74,7 @@ def serve(state, bundle_binary, loopback):
             commands.put(dict(command='quit'))
 
     def poll(active=False):
-        nonlocal invitation, expires, pending, approved, secret, live
+        nonlocal invitation, expires, pending, approved, secret, live, auto_allowed
         while True:
             if invitation and time.monotonic() >= expires:
                 invitation = None
@@ -107,12 +108,21 @@ def serve(state, bundle_binary, loopback):
                 credential.unlink(missing_ok=True)
                 secret = None
             if command in ('disconnect', 'forget', 'live', 'dry'):
+                auto_allowed = False
                 if command in ('live', 'dry'):
                     live = command == 'live' and not loopback
                 invitation = pending = None
                 notify('idle', paired=secret is not None)
                 if active:
-                    raise ConnectionAbortedError('Stopped on Mac')
+                    raise receiver.StopRequested('Stopped on Mac')
+
+    def admit(hello):
+        nonlocal auto_allowed
+        if hello.get('recovery') is True:
+            if hello.get('automatic') is not False and not auto_allowed:
+                raise receiver.StopRequested('Select Connect on the phone')
+            if hello.get('automatic') is False:
+                auto_allowed = True
 
     def pair(connection, packet):
         nonlocal invitation, pending, approved, secret
@@ -201,7 +211,7 @@ def serve(state, bundle_binary, loopback):
                                 bridge = receiver.Bridge(not live)
                             bridge.emit(event)
 
-                        receiver.serve_client(connection, secret, emit, lambda: poll(active=True), pair, ready)
+                        receiver.serve_client(connection, secret, emit, lambda: poll(active=True), pair, ready, admit)
             except (ValueError, OSError, subprocess.SubprocessError):
                 pass
             finally:

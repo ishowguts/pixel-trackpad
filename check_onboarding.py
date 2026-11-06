@@ -58,8 +58,8 @@ def check(state, bundle):
     def send(peer, **fields):
         peer.sendall(json.dumps(fields).encode()+b'\n')
 
-    def hello(peer, token):
-        send(peer, type='hello', version=1, secret=token, t=time.monotonic()*1000)
+    def hello(peer, token, **extra):
+        send(peer, type='hello', version=1, secret=token, t=time.monotonic()*1000, **extra)
 
     def invite(discovery=False):
         command('pair', **({} if discovery else dict(host='127.0.0.1')))
@@ -153,6 +153,25 @@ def check(state, bundle):
             assert replies.read(1) == b'K'
             send(peer, type='sample', seq=1, t=time.monotonic()*1000, contacts=[dict(id=0, x=.41, y=.4)])
             assert replies.read(1) == b'K'
+        assert read(process.stdout)['event'] == 'idle'
+        # A modern phone receives an explicit stop, and automatic attempts cannot undo it.
+        with connect() as peer, peer.makefile('rb') as replies:
+            hello(peer, secret, recovery=True, automatic=False)
+            assert json.loads(replies.readline()) == dict(type='ready', stop=True, surfaceScale=True)
+            assert read(process.stdout)['event'] == 'connected'
+            command('disconnect')
+            assert replies.read() == b'S'
+            assert read(process.stdout) == dict(event='idle', paired=True)
+            assert read(process.stdout) == dict(event='idle', paired=True)
+        with connect() as peer, peer.makefile('rb') as replies:
+            hello(peer, secret, recovery=True, automatic=True)
+            assert json.loads(replies.readline()) == dict(type='stopped')
+            assert not replies.read()
+        # Explicit phone Connect reopens admission without changing dry/live mode.
+        with connect() as peer, peer.makefile('rb') as replies:
+            hello(peer, secret, recovery=True, automatic=False)
+            assert json.loads(replies.readline())['type'] == 'ready'
+            assert read(process.stdout)['event'] == 'connected'
         assert read(process.stdout)['event'] == 'idle'
     finally:
         close()
