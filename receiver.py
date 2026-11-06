@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Explicit-run, single-client TLS touch receiver. No input in dry-run mode."""
 import argparse
+from collections import deque
 import hashlib
 import hmac
 import ipaddress
@@ -60,6 +61,7 @@ class Recognizer:
         self.pending_secondary = None
         self.suppressed = False
         self.pending_velocity = None
+        self.desktop_history = deque(maxlen=32)
 
     def gesture(self, test, phase, value=0., x=0., momentum=False):
         self.emit(dict(op='gesture', test=test, phase=phase, value=value, x=x, momentum=int(momentum)))
@@ -74,16 +76,29 @@ class Recognizer:
             self.gesture(0, 4, momentum=True)
             self.momentum = None
 
-    def close_mode(self, cancel=False):
+    def close_mode(self, cancel=False, timestamp=None):
         if self.held:
             self.button()
         if self.mode in ('scroll', 'pinch', 'rotate', 'desktop', 'vertical'):
             test = {'scroll': 0, 'pinch': 1, 'rotate': 2, 'desktop': 5, 'vertical': 8}[self.mode]
             dock = self.mode in ('desktop', 'vertical')
             commit = dock and not cancel and abs(self.progress) >= .45
+            if self.mode == 'desktop' and not cancel and not commit and timestamp is not None:
+                recent = [(t, x) for t, x in self.desktop_history if 0 <= timestamp-t <= .12]
+                if len(recent) >= 3 and .02 <= timestamp-recent[0][0] and timestamp-recent[-1][0] <= .05:
+                    direction = -math.copysign(1., self.progress)
+                    travel = abs(self.progress)*40
+                    prior = (recent[-2][1]-recent[0][1])*direction
+                    velocity = min((recent[-1][1]-recent[0][1])*direction/(timestamp-recent[0][0]),
+                                   prior/(recent[-2][0]-recent[0][0]),
+                                   (recent[-1][1]-recent[-2][1])*direction/(recent[-1][0]-recent[-2][0]), 400.)
+                    # ponytail: this fixed history heuristic is hardware-specific; tune timing and travel bounds after physical comparisons.
+                    commit = (travel >= 8 and prior >= 4 and velocity >= 100 and travel+.1*velocity >= 18
+                              and all((b[1]-a[1])*direction >= 0 for a, b in zip(recent, recent[1:])))
             self.gesture(test, 8 if cancel or (dock and not commit) else 4,
                          math.copysign(1., self.progress) if commit else self.progress if dock else 0.)
         self.mode = None
+        self.desktop_history.clear()
 
     def cancel(self):
         self.close_mode(True)
@@ -141,14 +156,14 @@ class Recognizer:
             if old_ids and ids and ids < old_ids and (self.mode or self.suppressed):
                 if self.mode == 'scroll':
                     self.pending_velocity = (*velocity, timestamp)
-                self.close_mode()
+                self.close_mode(timestamp=timestamp)
                 self.stop_momentum()
                 self.tap_ok = False
                 self.suppressed = True
                 self.points, self.last_time = points, timestamp
                 return
             if old_ids:
-                self.close_mode(cancel=bool(ids))
+                self.close_mode(cancel=bool(ids), timestamp=timestamp)
             self.stop_momentum()
             if not ids:
                 if self.tap_ok and timestamp - self.started < .25 and self.travel < 2 and self.peak in (1, 2):
@@ -191,6 +206,9 @@ class Recognizer:
                 self.origin = self.geometry(points)
                 self.previous = self.origin
                 self.progress = 0.
+                self.desktop_history.clear()
+                if len(ids) in (3, 4):
+                    self.desktop_history.append((timestamp, 0.))
                 if (len(ids) == 1 and self.config['drag']) or (len(ids) == 3 and self.config['threeDrag']):
                     self.pending_secondary = None
                     self.mode = 'drag'
@@ -245,6 +263,11 @@ class Recognizer:
                 delta = math.degrees(math.atan2(math.sin(angle-self.previous[3]), math.cos(angle-self.previous[3])))
                 self.gesture(2, 2, delta*self.config['rotation'])
         elif len(ids) in (3, 4) and not (len(ids) == 3 and self.config['threeDrag']):
+            if timestamp <= self.last_time:
+                self.desktop_history.clear()
+            while self.desktop_history and timestamp-self.desktop_history[0][0] > .12:
+                self.desktop_history.popleft()
+            self.desktop_history.append((timestamp, total_x))
             if self.mode is None and max(abs(total_x), abs(total_y)) > 3:
                 if abs(total_x) >= abs(total_y):
                     self.mode = 'desktop'

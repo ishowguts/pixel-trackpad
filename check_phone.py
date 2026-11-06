@@ -229,6 +229,95 @@ class PrototypeCheck(unittest.TestCase):
         r.cancel()
         self.assertEqual(sum(e.get('op') == 'anchor' for e in events), 2)
 
+    def test_desktop_flick_completion(self):
+        config = dict(width=130, height=60, gain=21.6, scroll=15, acceleration=False,
+                      natural=True, threeDrag=True, vertical=False)
+        quick = [(0, 0), (.02, 8), (.04, 16)]
+        cases = [
+            ('quick', quick, .05, 4),
+            ('slow', [(0, 0), (.2, 8), (.4, 16)], .41, 8),
+            ('hold', quick + [(.2, 16)], .21, 8),
+            ('noisy hold', quick + [(.2, 16.01)], .21, 8),
+            ('recent noisy hold', quick + [(.11, 16.01)], .12, 8),
+            ('recent stationary hold', quick + [(.06, 16)], .07, 8),
+            ('old peak', quick + [(.08, 16.2), (.1, 16.4)], .11, 8),
+            ('paused release', quick, .2, 8),
+            ('coalesced idle', [(0, 0), (.4, 16)], .41, 8),
+            ('coalesced then noise', [(0, 0), (.4, 15.9), (.41, 16)], .42, 8),
+            ('noise', [(0, 0), (.02, 2), (.04, 4)], .05, 8),
+            ('last spike', [(0, 0), (.02, .1), (.04, 16)], .05, 8),
+            ('reverse', quick + [(.05, 10)], .06, 8),
+            ('return', [(0, 0), (.02, 24), (.04, 3)], .05, 8),
+            ('equal timestamps', [(0, 0), (0, 8), (0, 16)], 0, 8),
+            ('equal last timestamp', [(0, 0), (.02, 8), (.02, 16)], .03, 8),
+            ('long slow', [(0, 0), (.2, 12), (.4, 24)], .6, 4),
+        ]
+        for direction in (-1, 1):
+            for scale in (1, 1.8):
+                for name, path, release, phase in cases:
+                    with self.subTest(direction=direction, scale=scale, case=name):
+                        events = []
+                        secret = '0'*64  # Disposable test value, never read from pairing state.
+                        hello = dict(type='hello', version=1, secret=secret, t=0, settings=config)
+                        session = Session(hello, secret, events.append, now=100)
+                        packets = []
+
+                        def sample(t, travel, count=4, kind='sample', vertical=False):
+                            packet = dict(type=kind, seq=len(packets), t=t*1000, surface=[scale, scale],
+                                          contacts=[dict(id=i, x=(40+i*4+(0 if vertical else direction*travel))/(130*scale),
+                                                         y=(20+(direction*travel if vertical else 0))/(60*scale))
+                                                    for i in range(count)])
+                            packets.append(packet)
+                            # Arrival jitter must not become gesture velocity.
+                            session.frame(packet, now=100+t+.05*(len(packets) % 2))
+
+                        for t, travel in path:
+                            sample(t, travel)
+                        sample(release, path[-1][1], count=0)
+                        dock = [e for e in events if e.get('test') == 5]
+                        changes = len(path)-next(i for i, (_, travel) in enumerate(path) if abs(travel) > 3)
+                        self.assertEqual([e['phase'] for e in dock], [1]+[2]*changes+[phase])
+                        self.assertAlmostEqual(dock[-1]['value'], -direction if phase == 4 else -direction*path[-1][1]/40)
+
+                        if name != 'quick':
+                            continue
+                        # Reuse the same recognizer: no velocity survives a terminal or cancellation.
+                        for ending in ('staggered', 'cancel', 'added', 'disconnect', 'slow', 'vertical'):
+                            events.clear()
+                            packets.clear()
+                            session = Session(hello, secret, events.append, now=100)
+                            for repetition in range(2):
+                                base = repetition
+                                for t, travel in ([(0, 0), (.2, 8), (.4, 16)] if ending == 'slow' and repetition else quick):
+                                    session.recognizer.config['vertical'] = ending == 'vertical'
+                                    sample(base+t, travel, vertical=ending == 'vertical')
+                                end = base + (.41 if ending == 'slow' and repetition else .05)
+                                if ending == 'disconnect':
+                                    # The real connection EOF path invokes recognizer.cancel in finally.
+                                    if repetition == 0:
+                                        lost = []
+                                        peer = Mock()
+                                        peer.recv.side_effect = [('\n'.join(json.dumps(p) for p in [hello]+packets)+'\n').encode(), b'']
+                                        with patch('receiver.time.monotonic', return_value=100):
+                                            serve_client(peer, secret, lost.append)
+                                        self.assertEqual([e['phase'] for e in lost if e.get('test') == 5], [1, 2, 2, 8])
+                                    session.recognizer.cancel()
+                                else:
+                                    sample(end, 16, count=3 if ending == 'staggered' else 5 if ending == 'added' else 0,
+                                           kind='cancel' if ending == 'cancel' else 'sample')
+                                if ending == 'added':
+                                    sample(end+.01, 16, count=0)
+                                if ending == 'staggered':
+                                    before = len(events)
+                                    sample(end+.01, 20, count=3)
+                                    sample(end+.02, 20, count=1)
+                                    sample(end+.03, 25, count=1)
+                                    sample(end+.04, 25, count=0)
+                                    self.assertEqual(len(events), before)
+                            terminals = [e['phase'] for e in events if e.get('test') in (5, 8) and e['phase'] in (4, 8)]
+                            expected = [4, 8] if ending == 'slow' else [4, 4] if ending == 'staggered' else [8, 8]
+                            self.assertEqual(terminals, expected, ending)
+
     def test_two_finger_selection(self):
         origin = {0: (0, 0), 1: (20, 0)}
         paths = [
