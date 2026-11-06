@@ -128,9 +128,9 @@ static void BonjourRegistered(DNSServiceRef ref, DNSServiceFlags flags, DNSServi
 }
 
 - (void)mode:(NSButton *)sender {
-    if (sender.state == NSControlStateValueOn && !AXIsProcessTrusted()) {
+    if (sender.state == NSControlStateValueOn && !AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES})) {
         sender.state = NSControlStateValueOff;
-        _status.stringValue = @"Live input needs Accessibility permission for Pixel Trackpad. Dry run is still available.";
+        _status.stringValue = @"Allow Pixel Trackpad in macOS Accessibility settings, then enable this checkbox again. Dry run remains active.";
         return;
     }
     [self send:sender.state == NSControlStateValueOn ? @"live" : @"dry"];
